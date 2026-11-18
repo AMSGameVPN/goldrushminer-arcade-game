@@ -6,7 +6,7 @@
 <section class="cab" aria-label="Gold mine"><div class="hud"><div><small>ROUND</small><strong id="round">01</strong></div><div><small>SCORE</small><strong id="score">$0</strong></div><div><small>TARGET</small><strong id="target">$650</strong></div><div class="timer"><small>TIME LEFT</small><strong id="time">1:00</strong></div><button id="pause" aria-label="Pause game">Ⅱ</button></div>
 <div class="field"><canvas id="game" width="600" height="300" tabindex="0" aria-label="Mine. Click to drop the claw"></canvas><span class="location"><b>✦</b> <span id="place">RED ROCK CANYON</span></span><button id="begin"><span>▶</span> Start mining</button><div id="notice" role="status"></div></div>
 <div class="controls"><div><kbd>↓</kbd> Drop claw</div><div><kbd>↑</kbd> Use dynamite</div><button class="inventory" id="blast" aria-label="Use dynamite"><canvas data-sprite="dynamite"></canvas><b id="count">× 1</b></button></div></section>
-<section class="shop"><div class="shophead"><div><small>SUPPLY POST</small><h2>Miner’s shop</h2></div><div class="wallet"><canvas data-sprite="coin"></canvas> Wallet <b id="wallet">$100</b></div></div><div id="stock"></div><p class="shopnote">⟳ &nbsp; New stock each round</p></section></main>
+<section class="shop"><div class="shophead"><div><small>SUPPLY POST</small><h2>Miner’s shop</h2></div><div class="wallet"><canvas data-sprite="coin"></canvas> Wallet <b id="wallet">$25</b></div></div><div id="stock"></div><p class="shopnote">⟳ &nbsp; New stock each round · Clear the quota for a 4% payout · Wallet limit $250</p></section></main>
 <dialog id="dialog"><div id="dialogContent"></div></dialog><script>// Small indexed-color originals. Render once at source resolution, then stamp without filtering.
 (() => {
   const pieces = Object.create(null);
@@ -240,15 +240,17 @@ const rand=(lo,hi)=>lo+Math.random()*(hi-lo);
 const money=n=>'$'+n.toLocaleString('en-US');
 const pickups=[],particles=[],flakes=[];
 let phase='ready',mode='swing',angle=0,arc=0,length=23,held=null;
-let round=1,score=0,wallet=100,target=650,roundBase=0,remaining=60,bombs=1,power=0,grip=0;
+const startingCash=25, walletLimit=250, payoutRate=0.04;
+const maxGrip=6, maxPower=10;
+let round=1,score=0,wallet=startingCash,target=650,roundBase=0,remaining=60,bombs=1,power=0,grip=0;
 let best=0,sound=true,audio,stock=[],last=0,noticeUntil=0,popup=null,flash=0;
 try{best=Number(localStorage.vegasBest)||0;sound=localStorage.vegasSound!=='off'}catch{}
 const catalog=[
- {id:'dynamite',name:'Dynamite',desc:'Blast away a heavy catch.',price:45,buy:()=>bombs++},
- {id:'claw',name:'Wide claw',desc:'Grab treasure with a wider reach.',price:100,buy:()=>grip++},
- {id:'reel',name:'Power reel',desc:'Haul every catch back faster.',price:85,buy:()=>power++},
- {id:'clock',name:'Pocket watch',desc:'Add 12 seconds to this round.',price:65,buy:()=>remaining+=12},
- {id:'strength',name:'Strength tonic',desc:'Boost your hauling power.',price:70,buy:()=>power+=0.65}
+ {id:'dynamite',name:'Dynamite',desc:'Blast away a heavy catch.',price:18,buy:()=>bombs++},
+ {id:'claw',name:'Wide claw',desc:'Widen the jaws by 8 pixels.',price:60,available:()=>grip<maxGrip,buy:()=>grip++},
+ {id:'reel',name:'Power reel',desc:'Haul every catch back faster.',price:50,available:()=>power<maxPower,buy:()=>power=Math.min(maxPower,power+1)},
+ {id:'clock',name:'Pocket watch',desc:'Add 12 seconds to this round.',price:26,buy:()=>remaining+=12},
+ {id:'strength',name:'Strength tonic',desc:'Boost your hauling power.',price:32,available:()=>power<maxPower,buy:()=>power=Math.min(maxPower,power+0.65)}
 ];
 function icon(c,type){c.width=c.height=48;sprite(c.getContext('2d'),type,24,24,46)}
 document.querySelectorAll('[data-sprite]').forEach(c=>icon(c,c.dataset.sprite));
@@ -271,12 +273,12 @@ function refresh(){
 function note(msg){$('notice').textContent=msg;noticeUntil=performance.now()+1900}
 function shuffle(arr){for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]}return arr}
 function shop(){
- stock=shuffle([...catalog]).slice(0,3);
+ stock=shuffle(catalog.filter(item=>!item.available||item.available())).slice(0,3);
  $('stock').replaceChildren();
  for(const item of stock){
  const b=document.createElement('button');b.className='item';b.innerHTML='<span class="iconbox"><canvas></canvas></span><span><h3>'+item.name+'</h3><p>'+item.desc+'</p><span class="price">'+money(item.price)+'</span></span>';
  icon(b.querySelector('canvas'),item.id);
- b.onclick=()=>{unlock();if(phase!=='ready'&&phase!=='playing')return;if(wallet<item.price){note('Need '+money(item.price-wallet)+' more');tone(150,100);return}
+ b.onclick=()=>{unlock();if(phase!=='ready'&&phase!=='playing')return;if(item.available&&!item.available()){note('Upgrade already at maximum');return}if(wallet<item.price){note('Need '+money(item.price-wallet)+' more');tone(150,100);return}
  wallet-=item.price;item.buy();b.disabled=true;b.querySelector('.price').textContent='Sold';refresh();chime();note(item.name+' purchased')};
  $('stock').append(b)
  }
@@ -302,6 +304,14 @@ function prepare(){
 function start(){if(phase!=='ready')return;unlock();phase='playing';$('begin').hidden=true;refresh();tone(300,500,.16,'triangle')}
 function cast(){if($('dialog').open)return;if(phase==='ready')start();if(phase!=='playing'||mode!=='swing')return;mode='out';tone(570,145,.18,'sawtooth',0,.018)}
 function endpoint(){return{x:300+Math.sin(angle)*length,y:80+Math.cos(angle)*length}}
+function jawHalfWidth(){return 8+grip*4}
+function withinJaws(item,tip){
+ // Project the item into the claw’s rotated frame, then measure distance to the jaw opening.
+ const dx=item.x-tip.x,dy=item.y-tip.y;
+ const lateral=dx*Math.cos(angle)-dy*Math.sin(angle);
+ const forward=dx*Math.sin(angle)+dy*Math.cos(angle);
+ return Math.hypot(Math.max(0,Math.abs(lateral)-jawHalfWidth()),forward-5)<=item.size*.40;
+}
 function burst(x,y,color,n){for(let i=0;i<n;i++)particles.push({x,y,dx:rand(-45,45),dy:rand(-75,5),life:rand(.3,.65),color})}
 function blast(){unlock();if(phase!=='playing'||$('dialog').open)return;if(!bombs){note('Out of dynamite');return}if(!held){note('Use dynamite while hauling a catch');return}
  const {x,y}=endpoint();bombs--;held=null;burst(x,y,'#ffc15a',34);flash=.09;tone(120,20,.45,'sawtooth',0,.12);refresh()
@@ -312,13 +322,17 @@ function dialog(title,body,buttons){
  $('dialog').showModal()
 }
 function pause(help=false){if($('dialog').open)return;
- const before=phase;phase='paused';dialog(help?'How to play':'Mine paused',help?'Aim with the swinging claw. Click the mine or press ↓ to drop it. Heavy catches take longer to haul. Press ↑ or tap the dynamite counter to destroy a catch. Reach the target before time runs out. Spend your wallet at the supply post.':'Your timer is paused.',[[help?'Got it':'Resume mining',()=>{phase=before;refresh()}]])
+ const before=phase;phase='paused';dialog(help?'How to play':'Mine paused',help?'Aim with the swinging claw. Click the mine or press ↓ to drop it. Heavy catches take longer to haul. Press ↑ or tap the dynamite counter to destroy a catch. Meet the target to earn 4% of this round’s quota as shop cash. Your wallet holds up to $250.':'Your timer is paused.',[[help?'Got it':'Resume mining',()=>{phase=before;refresh()}]])
 }
 function finish(){
- phase='end';refresh();const won=score>=target;
+ if(phase!=='playing')return;
+ const won=score>=target;
+ const payout=won?Math.min(walletLimit-wallet,Math.round((target-roundBase)*payoutRate)):0;
+ wallet+=payout;
+ phase='end';refresh();
  if(won)chime();else tone(240,90,.45,'triangle',0,.08);
- dialog(won?'Claim complete!':'Shift’s over',won?'You hauled in '+money(score-roundBase)+' this round. A fresh mine and new supplies are waiting.':'Your haul reached '+money(score)+' against a target of '+money(target)+'.',[[won?'Next round':'Play again',()=>{
- if(won){round++}else{round=1;score=0;wallet=100;bombs=1;power=grip=0}prepare()
+ dialog(won?'Claim complete!':'Shift’s over',won?'You hauled in '+money(score-roundBase)+' this round. Wallet payout: +'+money(payout)+'. Balance: '+money(wallet)+(wallet===walletLimit?' (wallet full).':'.'):'Your haul reached '+money(score)+' against a target of '+money(target)+'.',[[won?'Next round':'Play again',()=>{
+ if(won){round++}else{round=1;score=0;wallet=startingCash;bombs=1;power=grip=0}prepare()
  }]])
 }
 function update(dt){
@@ -329,14 +343,14 @@ function update(dt){
  if(remaining<=0){finish();return}
  if(mode==='out'){
  length+=dt*197;const p=endpoint();
- const hit=pickups.find(o=>Math.hypot(o.x-p.x,o.y-p.y)<o.size*.40+4+Math.min(grip,6)*2);
+ const hit=pickups.find(o=>withinJaws(o,p));
  if(hit){held=hit;pickups.splice(pickups.indexOf(hit),1);mode='in';tone(190,90,.08,'triangle',0,.13)}
  else if(p.x<=4||p.x>=596||p.y>=297){mode='in';tone(130,95,.05)}
  }else if(mode==='in'){
  const speed=held?(held.type==='rock'?36:held.type==='gold'?67-(held.size-17)*.75:92):178;
- length-=dt*speed*(1+Math.min(power,10)*.32);
+ length-=dt*speed*(1+power*.32);
  if(length<=23){length=23;mode='swing';if(held){
- score+=held.value;wallet+=held.value;popup={value:held.value,life:1.0};burst(300,97,'#ffd777',11);held=null;chime();
+ score+=held.value;popup={value:held.value,life:1.0};burst(300,97,'#ffd777',11);held=null;chime();
  if(score>best){best=score;try{localStorage.vegasBest=best}catch{}}
  refresh();if(score>=target){finish();return}
  }}
@@ -350,8 +364,9 @@ function draw(dt){
  ctx.lineWidth=2;ctx.strokeStyle='#382719';ctx.beginPath();ctx.moveTo(300,79);ctx.lineTo(p.x,p.y);ctx.stroke();
  ctx.save();ctx.translate(Math.round(p.x),Math.round(p.y));ctx.rotate(-angle);
  if(held)sprite(ctx,held.type,0,7,held.size);
+ const span=jawHalfWidth()*(held ? 0.75 : 1);
  ctx.lineJoin='miter';for(const [color,width] of [['#30251f',3.8],['#d8c6a0',1.6]]){ctx.strokeStyle=color;ctx.lineWidth=width;
- for(const sign of [-1,1]){ctx.beginPath();ctx.moveTo(0,-3);ctx.lineTo(sign*5,0);ctx.lineTo(sign*(held?6:8),5);ctx.lineTo(sign*(held?3:5),9);ctx.stroke()}}
+ for(const sign of [-1,1]){ctx.beginPath();ctx.moveTo(0,-3);ctx.lineTo(sign*span*.62,0);ctx.lineTo(sign*span,5);ctx.lineTo(sign*span*.62,9);ctx.stroke()}}
  ctx.fillStyle='#473b30';ctx.fillRect(-2,-5,4,5);ctx.restore();
  if(phase!=='paused'){for(let i=particles.length-1;i>=0;i--){const e=particles[i];e.life-=dt;e.x+=e.dx*dt;e.y+=e.dy*dt;e.dy+=dt*130;if(e.life<=0)particles.splice(i,1)}}
  for(const e of particles){ctx.fillStyle=e.color;ctx.fillRect(e.x|0,e.y|0,2,2)}
